@@ -1,0 +1,422 @@
+---
+title: "Framingham - Logistic Regression "
+subtitle: "Data Analysis - EX 3 "
+author: "Babak Barghi, Han Jia"
+date: "`r format(Sys.time(), '%B %d, %Y')`"
+output:
+  pdf_document:
+    latex_engine: xelatex
+    number_sections: yes
+---
+
+\newpage
+\tableofcontents
+\newpage
+---
+```{r setup, eval=TRUE, echo=FALSE}
+knitr::opts_chunk$set(message = FALSE, warning = FALSE)
+```
+The analysis in this report is carried out in *R 4.0.2*[1] and the libraries below has been used.
+
+```{r }
+library(tidyverse)
+library(kableExtra)
+library(mice)
+library(caTools)
+library(corrplot)
+library(RColorBrewer)
+library(ROCR)
+```
+
+# Introduction
+
+The Framingham Heart Study is one of the most important epidemiological studies ever conducted, and the underlying analytics that led to our current understanding of cardiovascular disease. In the late 1940s, the US government set out to better understand cardiovascular disease. The plan was to track a large cohort of initially healthy patients over their lifetimes.
+The study included 5,209 patients, aged 30 to 59. Patients were given a questionnaire and an examination every two years. During this examination, their physical characteristics were recorded, their behavioural characteristics, as well as test results. Exams and questions expanded over time, but the key in the study was that the trajectory of the health of the patients was followed during their entire lifespan.
+In the following report the analysis and predections are carried by Logistic regression which is the appropriate regression analysis to conduct when the dependent variable is binary. Logistic regression is used to describe data and to explain the relationship between one dependent binary variable and one or more nominal, ordinal, interval or ratio-level independent variables.
+
+# Data description
+
+From the provided information it is stated that there are 4240 patients and 16 variables in *Framingham* dataset.
+In this report, the factors are categorized as follow for better understanding of analysis;
+
+First group is related to the demographic risk factors:
+
+- **male**
+- **age** 
+- **education**
+
+The behavioral risk factors:
+
+- **currentSmoker**
+- **cigsPerDay**
+
+The medical history risk factors:
+
+- **BPMeds**
+- **prevalentStroke** 
+- **prevalentHyp**
+- **diabetes**
+
+Also physical examination risk factors: 
+
+- **The total cholesterol level (totChol)**
+- **systolic blood pressure (sysBP)**
+- **diastolic blood pressure (diaBP)**
+- **Body Mass Index (BMI)**
+- **heartRate**
+- **glucose level**
+
+The last variable is the outcome or dependent variable, whether or not the patient developed coronary heart disease **CHD** in the next 10 years.
+
+Before getting into the analysis and specific tasks the data set would be imported.
+
+```{r }
+framinghamdata <- read_csv("framingham.csv")
+```
+
+The Data frame is read by using *read.csv* function. 
+
+# Framework of analysis:
+
+1. Split the data set in two sets (training and testing) taking into account which is the outcome of the data set.
+2. Analyse the correlation between independent variables and choose the set of variables for a prediction model.
+3. Build the logistic regression model.
+4. Visualise the probabilities produced by the model.
+5. Choose a threshold using the ROC.
+6. Evaluate its specificity and sensitivity and the AUC.
+7. Use the model and assess its predictions.
+
+_Additional Tasks:_
+
+Change the proportion of observations between the training and testing set and repeat the task. Compare the results on the testing set.
+
+
+## Task 1: Split the data set in two sets (training and testing) taking into account which is the outcome of the data set.
+
+First a general glance at the dataset would be beneficiary using the *summary* function. 
+
+```{r}
+summary(framinghamdata)
+```
+
+There are many NA values in the data fram, so we would have a closer look.
+
+```{r, rows.print = 25}
+sum(is.na(framinghamdata))                         #number of missing values
+colnames(framinghamdata)[colSums(is.na(framinghamdata)) > 0] #which columns have missing values
+```
+   
+Since, there are 645 NA values in the dataframe for 7 variables, these NA numbers can be imputed using the *mice* function.
+
+```{r }
+data <- framinghamdata
+data <- mice(data, seed = 42)
+data <- mice::complete(data) 
+```
+
+After imputing the baseline accuracy will be built for the *TenYearCHD* binary variable.
+
+```{r}
+table(data$TenYearCHD)
+
+baseline_accuracy <- (table(data$TenYearCHD)[1]/(table(data$TenYearCHD)[1] + 
+                                                   table(data$TenYearCHD)[2]))*100
+
+baseline_accuracy <- baseline_accuracy %>% round(digits = 2)
+print(baseline_accuracy)
+```
+
+Considering the variable *CHD*, it can be notice that `r table(data$TenYearCHD)[1]` out of the `r (table(data$TenYearCHD)[1] + table(data$TenYearCHD)[2])` patients did not develop coronary heart disease, or 0, and `r table(data$TenYearCHD)[2]` patients who developed coronary heart disease, labeled with 1. 
+
+Hence the baseline model accuracy is `r baseline_accuracy` percent, where baseline model accuracy is defined as the most frequent outcome of the dependent variable *CHD*.
+The model in the report, that will be built, has the goal of improve this baseline accuracy.
+
+### Split the data set
+
+It is necessary to randomly split our data set into a training set and testing set. Testing set is essential to validate results. For splitting the data *caTools* package is used also in order to get the same split the *set.seed* function is used, which initializes the random number generator.
+The *caTools* package contains *sample.split* command to split the data, setting split ratio of 0.75, meaning that 75% of the data will determine the training set, which it is use to build the model, while the other 25% of the data will constitute the testing set.
+
+```{r,rows.print = 25, max.print = 30}
+set.seed(42)
+split <- sample.split(data$TenYearCHD, SplitRatio = 0.75)
+```
+
+The function assign a *TRUE* or *FALSE* value for each observation, where *TRUE* means that the observation will be put in the **training** set while *FALSE* means that the observation will be part of the **testing** set. 
+
+In order to create our the two sets the *subset* function is used. Training set will be called *Training* and testing set *Test*.
+
+```{r}
+Training <- subset(data, split == TRUE)
+Test <- subset(data, split == FALSE)
+
+nrow(Training)
+nrow(Test)
+```
+
+In the train data set there are `r nrow(Training)` rows while in the test data set there are `r nrow(Test)` rows.
+
+Separation result is summarized below as number of observation in the training and test set per each CHD value and proportion of 0 values in each set.
+
+```{r }
+P_Train <- c(table(Training$TenYearCHD)[1],table(Training$TenYearCHD)[2])
+
+P_Test <- c(table(Test$TenYearCHD)[1], table(Test$TenYearCHD)[2])
+
+CHD_0_Proportion<- c(P_Train[1]/(P_Train[1]+P_Train[2]),
+                     P_Test[1]/(P_Test[1]+P_Test[2]))
+
+S_result <- data.frame(P_Train, P_Test) %>% as.data.frame()
+
+S_result[3,] <- CHD_0_Proportion
+
+S_result %>% 
+  kable(align= c('c'), digits = 2) %>% 
+  kable_styling(full_width = F, position = "center") %>%
+  row_spec(3, bold = T)
+    
+```
+
+Since the proportion of zero values for the two sets is equal, it can be claimed that a good seperation has been performed.  
+
+## Task 2: Analyse the correlation between independent variables and choose the set of variables for a prediction model.
+
+In order to choose the variables that will be used for creating the model, correlation among variables is checked in the training set. 
+The correlation has to be checked only for the numerical and binary variables, hence, a new dataset by eliminating the categorical variable *education* is created.
+
+```{r, fig1, fig.cap= "Correlation among variables", fig.align="center", fig.pos="H" }
+train_cor <- Training[,-3]
+corrplot(abs(cor(Training)>0.7) ,tl.col = "black", 
+         type="upper", col = brewer.pal(n = 8, name = "Reds"))
+
+```
+
+Figure 1 highlights that the pairs of variable correlated are:
+
+- *diaBP* and *sysBP.*
+- *cigsPerDay* and *currentSmoker.* 
+
+Since there are two pairs of variables which are correlated, four different models will be built by changing only the pairs of correlated variables with considering all the other independent variables.
+
+The First model is built by *sysBP.*, *cigsPerDay* and the others independent variables.
+
+```{r}
+M1_CHD <- glm(TenYearCHD ~ male + age + education + cigsPerDay + 
+               BPMeds + prevalentStroke + prevalentHyp + diabetes + 
+               totChol + sysBP + BMI + heartRate + glucose, 
+             data=Training, family=binomial)
+
+summary(M1_CHD)
+```
+
+
+The second model is built considering *sysBP.*, *currentSmoker.* and the others eleven independent variables.
+
+```{r}
+M2_CHD <- glm(TenYearCHD ~ male + age + education + currentSmoker + 
+               BPMeds + prevalentStroke + prevalentHyp + diabetes + 
+               totChol + sysBP + BMI + heartRate + glucose, 
+             data=Training, family=binomial)
+
+summary(M2_CHD)
+```
+
+
+The third model is built considering *diaBP*, *cigsPerDay* and the others eleven independent variables.
+
+```{r}
+M3_CHD <- glm(TenYearCHD ~ male + age + education + cigsPerDay + 
+               BPMeds + prevalentStroke + prevalentHyp + diabetes + 
+               totChol + diaBP + BMI + heartRate + glucose, 
+             data=Training, family=binomial)
+
+summary(M3_CHD)
+```
+
+The last model is built considering *diaBP*, *currentSmoker.* and the others eleven independent variables.
+
+```{r}
+M4_CHD <- glm(TenYearCHD ~ male + age + education + currentSmoker + 
+               BPMeds + prevalentStroke + prevalentHyp + diabetes + 
+               totChol + diaBP + BMI + heartRate + glucose, 
+             data=Training, family=binomial)
+
+summary(M4_CHD)
+```
+
+
+Considering the results obtained, it can be notice that in all the models six variables (*male*, *age*, *sysBP*, *prevalentHyp*, *totChol*, *glucose*) are significant while depending on the two pairs of correlated variables mentioned before, there are one or two significant variable.
+
+To understand which is the best model to use, a comparison of the AIC method of the models is presented below.
+
+```{r}
+AIC <- data.frame(M1_AIC= M1_CHD$aic, M2_AIC= M2_CHD$aic, 
+                  M3_AIC= M3_CHD$aic, M4_AIC= M4_CHD$aic)
+
+AIC %>% kable(align= c('c'), digits = 3) %>% 
+  kable_styling(full_width = F, position = "center")
+```
+
+From results it is possible to claim that **Model 1** is the best model since it has the lowest value of AIC.
+
+Then, the final model is obtained by considering only the significant variables of *Model 1*.
+
+```{r}
+CHD_fm <- glm(TenYearCHD ~ male + age +  cigsPerDay + 
+                sysBP + glucose, data=Training, family=binomial)
+
+summary(CHD_fm)
+
+```
+
+Therefore, the final logistic regression model obtained, with a AIC = 2429.1
+
+
+## Taks 4: Visualise the probabilities produced by the model.
+
+In order to make predictions on the final model the *predict* function is used. Also to obtain the probabilities the type is *response*.
+
+```{r }
+PTrain <- predict(CHD_fm, type="response")
+summary(PTrain)
+```
+
+The *tapply* function allows us to find the mean of predictions with respect to each outcome of the *CHD*.
+
+
+```{r }
+tapply(PTrain,Training$TenYearCHD,mean) 
+```
+
+The table shows that for all of the true cases in which patient developed coronary heart disease, it is predicted an average probability of  $0.24$. 
+On the other hand, for all of the true cases of *CHD = 0*, it is predicted an average probability of about $0.14$.
+
+## Task 5: Choose a threshold using the ROC.
+
+In order to convert probabilities to predictions, initially, a threshold value needs to be set. Indeed, if the probability of delevop coronary heart disease is greater than this threshold value, it is predicted to suffer of CHD, while if this probability is less than the threshold value, then it is predicted the opposite.
+
+The Receiver Operator Characteristic curve, or ROC curve, is used to define which value of the threshold is the best option. 
+The sensitivity, or true positive rate of the model, is shown on the y-axis while the false positive rate is given on the x-axis. The line shows how these two outcome measures vary with different threshold values.
+ 
+```{r, figure 1, fig.cap = "ROC curve" }
+ROCRpred <- prediction(PTrain, Training$TenYearCHD)
+ROCRperf <- performance(ROCRpred, "tpr", "fpr")
+plot(ROCRperf, colorize=TRUE, print.cutoffs.at=seq(0,1,by=0.1), text.adj=c(-0.2,1.7))
+```
+
+
+The threshold is selected considering the trade-off between false positive rate and true positive rate.
+
+Since the model is predicting heart disease too many type II errors is not advisable. Indeed, a False Negative (ignoring the probability of disease when there actualy is one) is more dangerous than a False Positive in this particular case. 
+
+Thus in order to increase the sensitivity, the threshold is set as $0.3$.
+
+## Task 6: Evaluate its specificity and sensitivity and the AUC.
+
+By using the threshold value set, the following confusion matrix is used to identify the sensitivity and specificity of model. 
+
+```{r, include=FALSE}
+comat <- table(Training$TenYearCHD, PTrain > 0.3)
+cm1 <- c(comat[1,1], comat[2,1])
+cm2 <- c(comat[2,1], comat[2,2])
+
+conf_matrix <- data.frame(cm1, cm2)
+
+conf_matrix <- conf_matrix%>% rename("Predicted=0"=cm1, "Predicted=1"=cm2)
+
+conf_matrix %>% kable(align= c('c'), digits = 2)%>% 
+  kable_styling(full_width = F, position = "center")
+
+```
+
+To evaluate the *specificity* and the *sensitivity*, the following formulas are used:
+
+
+$$ Sensitivity = \frac{TN}{TN+FP} $$ 
+$$ Specificity = \frac{TP}{TP+FN}$$  
+
+Now we calculate the level of *specificity* and *sensitivity* of the model obtained with the threshold equal to 0.4.
+
+```{r}
+SS <- data.frame("Sensitivity" =comat[2,2]/(comat[2,1]+comat[2,2]),
+                 "Specificity" = comat[1,1]/(comat[1,2]+comat[1,1]))
+
+SS %>% 
+  kable(align= c('c'), digits = 2 )%>% 
+  kable_styling(full_width = F, position = "center")
+
+```
+
+Then the AUC coefficient is evaluated, knowing that the closer the AUC to 1, the better.
+The area under the ROC curve quantifies model classification accuracy; the higher the area, the greater the disparity between true and false positives, and the stronger the model in classifying members of the *Training* dataset.
+
+```{r,echo=TRUE}
+AUC <- as.numeric(performance(ROCRpred, "auc")@y.values)
+```
+
+In this case the AUC is equal `r AUC`, which corresponds to the rate of successful classification by the logistic model used.
+
+## Task 7: Use the model and assess its predictions.
+
+In this part, the **prediction** made previously is used on **Test** data set in order to check the model effectiveness of predicting patients' health status in a 10 years timeline.
+
+To achieve, first it is required to evaluate the **accuracy** and compare it to **baseline** value.
+
+```{r}
+predictions <- predict(CHD_fm, newdata=Test, type="response")
+
+predTable <- table(Test$TenYearCHD, predictions > 0.4)
+predTable 
+
+accuracy <- table(predictions, Test[,"TenYearCHD"])
+
+data.frame("Accuracy" =(predTable[2,2]+predTable[1,1])/
+             (predTable[2,1]+predTable[2,2]+predTable[1,1]+predTable[1,2]),
+           "Baseline" = (predTable[1,1]+predTable[1,2])/
+             (predTable[2,1]+predTable[2,2]+predTable[1,1]+predTable[1,2]))
+
+```
+
+
+The actual accuracy is almost equal to the baseline, therefore, the model could be considered as good.
+
+# Additional Task 
+
+## Change the proportion of observations between the training and testing set and repeat the task. Compare the results on the testing set.
+
+
+For the additional task, we can change the ratio of split to $0.6$ and then determine the training and test data set. After that the same steps would be taken to analyse, predict and find the accuracy of the model. It is obvoius that by having a lower split case both parameter of accuracy and baseline values will drop because of the lower number of data for calculation. Finally, it can concluded that using more number of data increase the AIC value which is expected to be minimum to claim one model is good, but also increase the true prediction power of the model. 
+
+# Refrences
+
+[1] R Core Team (2019). R: A language and environment for statistical
+computing. R Foundation for Statistical Computing, Vienna, Austria.
+URL https://www.R-project.org/.
+
+[2] Wickham et al., (2019). Welcome to the tidyverse. Journal of Open
+Source Software, 4(43), 1686, https://doi.org/10.21105/joss.01686 
+
+[3] Hao Zhu (2020). kableExtra: Construct Complex
+  Table with 'kable' and Pipe Syntax. R package
+  version 1.2.1.
+  https://CRAN.R-project.org/package=kableExtra
+  
+[4] Erich Neuwirth (2014). RColorBrewer: ColorBrewer
+  Palettes. R package version 1.1-2.
+  https://CRAN.R-project.org/package=RColorBrewer
+  
+[5] Taiyun Wei and Viliam Simko (2017). R package
+  "corrplot": Visualization of a Correlation Matrix
+  (Version 0.84). Available from
+  https://github.com/taiyun/corrplot
+  
+[6] Maechler, M., Rousseeuw, P., Struyf, A., Hubert,
+  M., Hornik, K.(2019).  CaTools
+  Basics and Extensions. R package version 2.1.0. 
+  
+[7] Sing T, Sander O, Beerenwinkel N, Lengauer T (2005). “ROCR: visualizing classifier
+performance in R.” _Bioinformatics_, *21*(20), 7881. <URL:
+http://rocr.bioinf.mpi-sb.mpg.de>.
+```{r}
+split
+```
+
